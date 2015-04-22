@@ -74,6 +74,8 @@ common.patch_socket()
 # |                    ARCOUNT                    |
 # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
+# header = struct.pack('!HBBHHHH', request_id, 1, 0, 1, 0, 0, 0)
+
 # 一个字节=8位=两个16进制数
 
 QTYPE_ANY = 255

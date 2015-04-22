@@ -1,140 +1,243 @@
-shadowsocks
-===========
+# shadowsocks源码分析
 
-[![PyPI version]][PyPI]
-[![Build Status]][Travis CI]
-[![Coverage Status]][Coverage]
+## 项目结构：
+###### 1、asyndns.py 用于处理dns请求
+###### 2、common.py
+###### 3、daemon.py，提供daemon运行机制
+###### 4、encrypt，处理shadowsocks协议的加密解密
+###### 5、eventloop，事件循环，使用select、poll、epoll、kequeue实现IO复用，作者讲三种底层实现包装成一个类Eventloop
+###### 6、local，在本地运行的程序
+###### 7、lru_cache.py，作者实现的一个基于LRU的缓存
+###### 8、server.py，在远程运行的程序
+###### 9、tcprelay，实现tcp的转达，用在远程端中使远程和dest连接
+###### 10、udprelay，实现udp的转达，用于local端处理local和客户端的socks5协议通信，用于local端和远程端shadowsocks协议的通信；用于远程端与local端shadowsocks协议的通信，用于远程端和dest端的通信
+###### 11、utils.py
 
-A fast tunnel proxy that helps you bypass firewalls.
+> 代码质量相当的高，感觉都能达到重用的级别。而且由于作者设计的思想是，一个配置文件，同一段程序，在本地和远程通用，所以其中的代码，常常能够达到一个函数，在本地和服务器有不同的功能这样的效果。
 
-[中文说明][Chinese Readme]
+===============================================================
+## 核心：eventloop.py，udprelay.py，tcprelay.py，asyndns.py
+eventloop使用select、epoll、kqueue等IO复用实现异步处理。优先级为epoll\>kqueue\>select。Eventloop将三种复用机制的add，remove，poll，add_handler，remve_handler接口统一起来，程序员只需要使用这些函数即可，不需要处理底层细节。
 
-Install
--------
+后三个文件分别实现用来处理udp的请求，tcp的请求，dns的查询请求，并且将三种请求的处理包装成handler。对于tcp，udp的handler，它们bind到特定的端口，并且将socket交给eventloop，并且将自己的处理函数加到eventloop的handlers；对于dns的handler，它接受来自udp handler和tcp handler的dns查询请求，并且向远程dns服务器发出udp请求；
 
-You'll have a client on your local side, and setup a server on a
-remote server.
+当eventloop监测到socket的数据，程序就将所有监测到的socket和事件交给所有handler去处理，每个handler通过socket和事件判断自己是否要处理该事件，并进行相对的处理：
+##### 当local收到udprelay handler绑定的端口的事件，说明客户端发来请求，local对SOCKS5协议的内容进行处理之后经过加密转发给远程；
 
-### Client
+<pre>
++----+------+------+----------+----------+----------+
+|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
++----+------+------+----------+----------+----------+
+| 2  |  1   |  1   | Variable |    2     | Variable |
++----+------+------+----------+----------+----------+
+</pre>
 
-* [Windows] / [OS X]
-* [Android] / [iOS]
-* [OpenWRT]
+trim-\>
+<pre>
++------+----------+----------+----------+
+| ATYP | DST.ADDR | DST.PORT |   DATA   |
++------+----------+----------+----------+
+|  1   | Variable |    2     | Variable |
++------+----------+----------+----------+
+</pre>
 
-### Server
-
-#### Debian / Ubuntu:
-
-    apt-get install python-pip
-    pip install shadowsocks
-
-Or simply `apt-get install shadowsocks` if you have [Debian sid] in your
-source list.
-
-#### CentOS:
-
-    yum install python-setuptools
-    easy_install pip
-    pip install shadowsocks
-
-#### Windows:
-
-Download [OpenSSL for Windows] and install. Then install shadowsocks via
-easy_install and pip as Linux. If you don't know how to use them, you can
-directly download [the package], and use `python shadowsocks/server.py`
-instead of `ssserver` command below.
-
-Configuration
--------------
-
-On your server create a config file `/etc/shadowsocks.json`.
-Example:
-
-    {
-        "server":"my_server_ip",
-        "server_port":8388,
-        "local_address": "127.0.0.1",
-        "local_port":1080,
-        "password":"mypassword",
-        "timeout":300,
-        "method":"aes-256-cfb",
-        "fast_open": false
-    }
-
-Explanation of the fields:
-
-| Name          | Explanation                                     |
-| ------------- | ----------------------------------------------- |
-| server        | the address your server listens                 |
-| server_port   | server port                                     |
-| local_address | the address your local listens                  |
-| local_port    | local port                                      |
-| password      | password used for encryption                    |
-| timeout       | in seconds                                      |
-| method        | default: "aes-256-cfb", see [Encryption]        |
-| fast_open     | use [TCP_FASTOPEN], true / false                |
-| workers       | number of workers, available on Unix/Linux      |
-
-On your server:
-
-To run in the foreground:
-
-    ssserver -c /etc/shadowsocks.json
-
-To run in the background:
-
-    ssserver -c /etc/shadowsocks.json -d start
-    ssserver -c /etc/shadowsocks.json -d stop
-
-On your client machine, use the same configuration as your server. Check the
-README of your client for more information.
-
-Command Line Options
---------------------
-
-Check the options via `-h`.You can use args to override settings from
-`config.json`.
-
-    sslocal -s server_name -p server_port -l local_port -k password -m bf-cfb
-    ssserver -p server_port -k password -m bf-cfb --workers 2
-    ssserver -c /etc/shadowsocks/config.json -d start --pid-file=/tmp/shadowsocks.pid
-    ssserver -c /etc/shadowsocks/config.json -d stop --pid-file=/tmp/shadowsocks.pid
-
-Documentation
--------------
-
-You can find all the documentation in the wiki:
-https://github.com/clowwindy/shadowsocks/wiki
-
-License
--------
-MIT
-
-Bugs and Issues
-----------------
-
-* [Troubleshooting]
-* [Issue Tracker]
-* [Mailing list]
+-\>encrypt
+<pre>
++-------+--------------+
+|   IV  |    PAYLOAD   |
++-------+--------------+
+| Fixed |   Variable   |
++-------+--------------+
+</pre>
 
 
-[Android]:           https://github.com/clowwindy/shadowsocks/wiki/Ports-and-Clients#android
-[Build Status]:      https://img.shields.io/travis/clowwindy/shadowsocks/master.svg?style=flat
-[Chinese Readme]:    https://github.com/clowwindy/shadowsocks/wiki/Shadowsocks-%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E
-[Coverage Status]:   http://192.81.132.184/result/shadowsocks
-[Coverage]:          http://192.81.132.184/job/Shadowsocks/ws/htmlcov/index.html
-[Debian sid]:        https://packages.debian.org/unstable/python/shadowsocks
-[the package]:       https://pypi.python.org/pypi/shadowsocks
-[Encryption]:        https://github.com/clowwindy/shadowsocks/wiki/Encryption
-[iOS]:               https://github.com/shadowsocks/shadowsocks-iOS/wiki/Help
-[Issue Tracker]:     https://github.com/clowwindy/shadowsocks/issues?state=open
-[Mailing list]:      http://groups.google.com/group/shadowsocks
-[OpenSSL for Windows]: http://slproweb.com/products/Win32OpenSSL.html
-[OpenWRT]:           https://github.com/clowwindy/shadowsocks/wiki/Ports-and-Clients#openwrt
-[OS X]:              https://github.com/shadowsocks/shadowsocks-iOS/wiki/Shadowsocks-for-OSX-Help
-[PyPI]:              https://pypi.python.org/pypi/shadowsocks
-[PyPI version]:      https://img.shields.io/pypi/v/shadowsocks.svg?style=flat
-[TCP_FASTOPEN]:      https://github.com/clowwindy/shadowsocks/wiki/TCP-Fast-Open
-[Travis CI]:         https://travis-ci.org/clowwindy/shadowsocks
-[Troubleshooting]:   https://github.com/clowwindy/shadowsocks/wiki/Troubleshooting
-[Windows]:           https://github.com/clowwindy/shadowsocks/wiki/Ports-and-Clients#windows
+##### 当local新建的socket收到连接请求时，说明远程向local发送结果，此时对信息进行解密，并且对shadowsocks协议进行适当加工，发回给客户端
+
+<pre>
++-------+--------------+
+|   IV  |    PAYLOAD   |
++-------+--------------+
+| Fixed |   Variable   |
++-------+--------------+
+</pre>
+
+-\>decrypt
+
+<pre>
++------+----------+----------+----------+
+| ATYP | DST.ADDR | DST.PORT |   DATA   |
++------+----------+----------+----------+
+|  1   | Variable |    2     | Variable |
++------+----------+----------+----------+
+</pre>
+
+-\>add
+
+<pre>
++----+------+------+----------+----------+----------+
+|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
++----+------+------+----------+----------+----------+
+| 2  |  1   |  1   | Variable |    2     | Variable |
++----+------+------+----------+----------+----------+
+</pre>
+
+##### 当远程端收到udp handler绑定的端口的事件，说明local端发来请求，远程端对信息进行解密并根据dest服务器/端口的协议类型对其发出tcp连接或者udp连接；
+
+<pre>
++-------+--------------+
+|   IV  |    PAYLOAD   |
++-------+--------------+
+| Fixed |   Variable   |
++-------+--------------+
+</pre>
+
+-\>decrypt
+
+<pre>
++------+----------+----------+----------+
+| ATYP | DST.ADDR | DST.PORT |   DATA   |
++------+----------+----------+----------+
+|  1   | Variable |    2     | Variable |
++------+----------+----------+----------+
+</pre>
+
+-\>trim
+
+<pre>
++----------+
+|   DATA   |
++----------+
+| Variable |
++----------+
+</pre>
+
+-\>getaddrinfo-\>tcp/udp
+-\>send to dest server via tcp/udp 
+
+
+##### 当远程新建的socket收到连接请求时，说明dest服务器向远程端发出响应，远程端对其进行加密，并且转发给local端
+
+<pre>
++----------+
+|   DATA   |
++----------+
+| Variable |
++----------+
+</pre>
+
+-\>add
+
+<pre>
++------+----------+----------+----------+
+| ATYP | DST.ADDR | DST.PORT |   DATA   |
++------+----------+----------+----------+
+|  1   | Variable |    2     | Variable |
++------+----------+----------+----------+
+</pre>
+
+-\>encrypt
+
+<pre>
++-------+--------------+
+|   IV  |    PAYLOAD   |
++-------+--------------+
+| Fixed |   Variable   |
++-------+--------------+
+</pre>
+
+-\>send to local
+
+在handler函数里面的基本逻辑就是：
+<pre>
+if sock == self._server_socket:
+self._handle_server()
+elif sock and (fd in self._sockets):
+self._handle_client(sock)
+</pre>
+
+协议解析和构建用的struct.pack()和struct.unpack()
+
+===============================================================
+##### asyndns.py实现的是一个DNS服务器，封装得相当的好
+1.1、读取/etc/hosts和/etc/resolv.conf文件，如果没有设置，就设置dns服务器为8.8.8.8和8.8.4.4
+1.2、收到tcp handler和udp handler的dns请求之后，建立socket并且向远程服务器发送请求，并把（hostname：callback）加入_hostname_to_cb
+1.3、收到响应之后触发callback _hostname_to_cb[hostname](#)
+
+###### 作者全程用二进制构建dns报文，非常值得学习
+
+<pre>
+# 请求
+#                                 1  1  1  1  1  1
+#   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                      ID                       |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    QDCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    ANCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    NSCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    ARCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+</pre>
+
+响应：
+<pre>
+                                 1  1  1  1  1  1
+  0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                                               |
+/                                               /
+/                      NAME                     /
+|                                               |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                      TYPE                     |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                     CLASS                     |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                      TTL                      |
+|                                               |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                   RDLENGTH                    |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--|
+/                     RDATA                     /
+/                                               /
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+</pre>
+
+===============================================================
+##### lru_cache.py实现的是一个缓存
+
+<pre>
+self._store = 
+self._time_to_keys = collections.defaultdict(list)
+self._keys_to_last_time = 
+self._last_visits = collections.deque()
+</pre>
+
+
+###### 1、先找访问时间_last_visits中超出timeout的所有键
+###### 2、然后去找_time_to_keys，找出所有可能过期的键
+###### 3、因为最早访问时间访问过的键之后可能又访问了，所以要_keys_to_last_time
+###### 4、找出那些没被访问过的，然后删除
+
+===============================================================
+##### 学到的其他东西：
+###### 1、__future__
+###### 2、json.loads(f.read().decode('utf8'),object_hook=_decode_dict)
+###### 3、python内置的logging也可作大规模使用
+###### 4、把我理解层面阔伸到协议层面，学到怎么构建一个协议（协议的设计还要学习）
+###### 5、网络编程和信息安全息息相关
+###### 6、这个网络编程的学习路线挺不错的：爬虫-\>翻墙软件。不知道下一步怎么加深
+
+一些问题：
+###### 1、如何做到线程安全？
+###### 2、大量对变量是否存在的检查是为了什么？
+###### 3、FSM的思想怎么应用到网络编程？
+###### 4、防火墙到底是怎么工作的？（其实这个问题我自己觉得问的挺逗的。。）
+###### 5、linux的内核异步IO怎么调用（操作系统）
+
+
