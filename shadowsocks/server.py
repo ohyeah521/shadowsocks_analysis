@@ -61,6 +61,8 @@ def main():
     tcp_servers = []
     udp_servers = []
     dns_resolver = asyncdns.DNSResolver()
+    # 一个服务器端可以打开多个端口
+    # 对于每个端口，都要新建一个对应的处理器
     for port, password in config['port_password'].items():
         a_config = config.copy()
         a_config['server_port'] = int(port)
@@ -85,6 +87,7 @@ def main():
         try:
             loop = eventloop.EventLoop()
             dns_resolver.add_to_loop(loop)
+            # 这条语句有点屌
             list(map(lambda s: s.add_to_loop(loop), tcp_servers + udp_servers))
             loop.run()
         except (KeyboardInterrupt, IOError, OSError) as e:

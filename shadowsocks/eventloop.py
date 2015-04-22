@@ -84,10 +84,12 @@ class KqueueLoop(object):
 
     def _control(self, fd, mode, flags):
         events = []
+        # 和这种比较用&
         if mode & POLL_IN:
             events.append(select.kevent(fd, select.KQ_FILTER_READ, flags))
         if mode & POLL_OUT:
             events.append(select.kevent(fd, select.KQ_FILTER_WRITE, flags))
+        # 加到kqueue里面去
         for e in events:
             self._kqueue.control([e], 0)
 
@@ -95,13 +97,16 @@ class KqueueLoop(object):
         if timeout < 0:
             timeout = None  # kqueue behaviour
         events = self._kqueue.control(None, KqueueLoop.MAX_EVENTS, timeout)
+        # 只可以加类型，所以用一个lambda打包成一个类型
         results = defaultdict(lambda: POLL_NULL)
         for e in events:
+            # e是kevent
             fd = e.ident
             if e.filter == select.KQ_FILTER_READ:
                 results[fd] |= POLL_IN
             elif e.filter == select.KQ_FILTER_WRITE:
                 results[fd] |= POLL_OUT
+        # 最终返回某个fd是不是有POLL_IN/POLL_OUT，默认是POLL_NULL
         return results.items()
 
     def add_fd(self, fd, mode):
@@ -153,7 +158,7 @@ class SelectLoop(object):
         self.remove_fd(fd)
         self.add_fd(fd, mode)
 
-
+# 一个EventLoop包装了所有IO复用方法，掉渣
 class EventLoop(object):
     def __init__(self):
         self._iterating = False
@@ -179,6 +184,7 @@ class EventLoop(object):
         events = self._impl.poll(timeout)
         return [(self._fd_to_f[fd], fd, event) for fd, event in events]
 
+    # 将select/kqueue/epoll的接口统一起来
     def add(self, f, mode):
         fd = f.fileno()
         self._fd_to_f[fd] = f
@@ -187,6 +193,7 @@ class EventLoop(object):
     def remove(self, f):
         fd = f.fileno()
         del self._fd_to_f[fd]
+        # self._impl loop的是fd，发信息靠socket
         self._impl.remove_fd(fd)
 
     def modify(self, f, mode):
@@ -211,6 +218,7 @@ class EventLoop(object):
         events = []
         while self._ref_handlers:
             try:
+                # 统一之后的启动，timeout为1
                 events = self.poll(1)
             except (OSError, IOError) as e:
                 if errno_from_exception(e) in (errno.EPIPE, errno.EINTR):
@@ -227,12 +235,14 @@ class EventLoop(object):
             for handler in self._handlers:
                 # TODO when there are a lot of handlers
                 try:
+                    # 调用所有handler去处理所有events
                     handler(events)
                 except (OSError, IOError) as e:
                     logging.error(e)
                     import traceback
                     traceback.print_exc()
             for handler in self._handlers_to_remove:
+                # 可以直接从列表里面remove
                 self._handlers.remove(handler)
                 self._handlers_to_remove = []
             self._iterating = False

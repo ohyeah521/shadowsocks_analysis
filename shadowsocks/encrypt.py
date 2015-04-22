@@ -146,7 +146,8 @@ class Encryptor(object):
                 return buf
         return self.decipher.update(buf)
 
-
+# 加密解密同在一个函数
+# 0解码，1加密
 def encrypt_all(password, method, op, data):
     result = []
     method = method.lower()

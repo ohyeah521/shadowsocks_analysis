@@ -36,7 +36,9 @@ import time
 # TODO: if timeout or QPS is too large, then this cache is not very efficient,
 #       as sweep() causes long pause
 
+# 作者对于每个步骤的耗费都有考虑
 
+# 用到了容器基类
 class LRUCache(collections.MutableMapping):
     """This class is not thread safe"""
 
@@ -54,6 +56,7 @@ class LRUCache(collections.MutableMapping):
         t = time.time()
         self._keys_to_last_time[key] = t
         self._time_to_keys[t].append(key)
+        # 根据时间去清理
         self._last_visits.append(t)
         return self._store[key]
 
@@ -76,6 +79,12 @@ class LRUCache(collections.MutableMapping):
     def __len__(self):
         return len(self._store)
 
+
+# 先找访问时间_last_visits中超出timeout的所有键
+# 然后去找_time_to_keys，找出所有可能过期的键
+# 因为最早访问时间访问过的键之后可能又访问了，所以要看_keys_to_last_time
+# 找出那些没被访问过的，然后删除
+
     def sweep(self):
         # O(m)
         now = time.time()
@@ -90,6 +99,8 @@ class LRUCache(collections.MutableMapping):
                         if now - self._keys_to_last_time[key] > self.timeout:
                             value = self._store[key]
                             self.close_callback(value)
+            
+            # 最早的肯定是最前的
             for key in self._time_to_keys[least]:
                 self._last_visits.popleft()
                 if key in self._store:

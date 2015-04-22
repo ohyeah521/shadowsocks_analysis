@@ -48,6 +48,8 @@ CMD_CONNECT = 1
 CMD_BIND = 2
 CMD_UDP_ASSOCIATE = 3
 
+# handler放在我们自己的服务器
+
 # TCP Relay can be either sslocal or ssserver
 # for sslocal it is called is_local=True
 
@@ -65,6 +67,8 @@ CMD_UDP_ASSOCIATE = 3
 #                 read remote and write to local
 
 # for each handler, it could be at one of several stages:
+
+# stages?
 
 # sslocal:
 # stage 0 SOCKS hello received from local, send hello to local
@@ -309,6 +313,8 @@ class TCPRelayHandler(object):
                 data_to_send = self._encryptor.encrypt(data)
                 self._data_to_write_to_remote.append(data_to_send)
                 # notice here may go into _handle_dns_resolved directly
+
+                # 这里调用dns_server的resolve，dns_server可以作为一个可移植的模块了
                 self._dns_resolver.resolve(self._chosen_server[0],
                                            self._handle_dns_resolved)
             else:
@@ -477,6 +483,7 @@ class TCPRelayHandler(object):
             logging.error(eventloop.get_sock_error(self._remote_sock))
         self.destroy()
 
+    # key
     def handle_event(self, sock, event):
         # handle all events in this handler and dispatch them to methods
         if self._stage == STAGE_DESTROYED:
@@ -485,6 +492,7 @@ class TCPRelayHandler(object):
         # order is important
         if sock == self._remote_sock:
             if event & eventloop.POLL_ERR:
+                # remote就是墙外的服务器
                 self._on_remote_error()
                 if self._stage == STAGE_DESTROYED:
                     return
@@ -496,6 +504,7 @@ class TCPRelayHandler(object):
                 self._on_remote_write()
         elif sock == self._local_sock:
             if event & eventloop.POLL_ERR:
+                # local就是我们墙内的proxy
                 self._on_local_error()
                 if self._stage == STAGE_DESTROYED:
                     return
@@ -566,11 +575,13 @@ class TCPRelay(object):
             listen_port = config['server_port']
         self._listen_port = listen_port
 
+        # (family, type, proto, canonname, sockaddr)
         addrs = socket.getaddrinfo(listen_addr, listen_port, 0,
                                    socket.SOCK_STREAM, socket.SOL_TCP)
         if len(addrs) == 0:
             raise Exception("can't get addrinfo for %s:%d" %
                             (listen_addr, listen_port))
+
         af, socktype, proto, canonname, sa = addrs[0]
         server_socket = socket.socket(af, socktype, proto)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -582,6 +593,8 @@ class TCPRelay(object):
             except socket.error:
                 logging.error('warning: fast open is not available')
                 self._config['fast_open'] = False
+        
+        # it is a server in the sense of browser
         server_socket.listen(1024)
         self._server_socket = server_socket
 
@@ -591,6 +604,8 @@ class TCPRelay(object):
         if self._closed:
             raise Exception('already closed')
         self._eventloop = loop
+
+        # 这里就相比dnsserver少了一层
         loop.add_handler(self._handle_events)
 
         self._eventloop.add(self._server_socket,
@@ -652,6 +667,7 @@ class TCPRelay(object):
                 pos = 0
             self._timeout_offset = pos
 
+    # 处理从dest传回到远程的消息
     def _handle_events(self, events):
         # handle events and dispatch to handlers
         for sock, fd, event in events:
@@ -665,6 +681,7 @@ class TCPRelay(object):
                 try:
                     logging.debug('accept')
                     conn = self._server_socket.accept()
+                    # 创建一个新的连接，并且新建一个TCPRelayHandler处理
                     TCPRelayHandler(self, self._fd_to_handlers,
                                     self._eventloop, conn[0], self._config,
                                     self._dns_resolver, self._is_local)
@@ -679,8 +696,10 @@ class TCPRelay(object):
                             traceback.print_exc()
             else:
                 if sock:
+                    # 如果是已经accept的连接，就找相对应的handler处理它
                     handler = self._fd_to_handlers.get(fd, None)
                     if handler:
+                        # 这里调用handler里面的handle_event来处理事件
                         handler.handle_event(sock, event)
                 else:
                     logging.warn('poll removed fd')

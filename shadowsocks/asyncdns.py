@@ -31,7 +31,7 @@ import struct
 import re
 import logging
 
-from shadowsocks import common, lru_cache, eventloop
+import common, lru_cache, eventloop
 
 
 CACHE_SWEEP_INTERVAL = 30
@@ -55,6 +55,9 @@ common.patch_socket()
 # +---------------------+
 #
 # header
+# 
+# 
+# 这里一行16个位，就是两个字节
 #                                 1  1  1  1  1  1
 #   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
 # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -70,6 +73,8 @@ common.patch_socket()
 # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 # |                    ARCOUNT                    |
 # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+# 一个字节=8位=两个16进制数
 
 QTYPE_ANY = 255
 QTYPE_A = 1
@@ -169,6 +174,21 @@ def parse_record(data, offset, question=False):
         )
         return nlen + 4, (name, None, record_type, record_class, None, None)
 
+#                                 1  1  1  1  1  1
+#   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                      ID                       |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    QDCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    ANCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    NSCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+# |                    ARCOUNT                    |
+# +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
 def parse_header(data):
     if len(data) >= 12:
@@ -284,6 +304,7 @@ class DNSResolver(object):
         # TODO monitor hosts change and reload hosts
         # TODO parse /etc/gai.conf and follow its rules
 
+    # DNS服务器的位置
     def _parse_resolv(self):
         self._servers = []
         try:
@@ -303,8 +324,10 @@ class DNSResolver(object):
         except IOError:
             pass
         if not self._servers:
+            # 没有自定义的，就用谷歌的
             self._servers = ['8.8.4.4', '8.8.8.8']
 
+    # 自定义的域名解析
     def _parse_hosts(self):
         etc_path = '/etc/hosts'
         if 'WINDIR' in os.environ:
@@ -331,16 +354,24 @@ class DNSResolver(object):
         # TODO when dns server is IPv6
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
                                    socket.SOL_UDP)
+        # dnsserver只作为发送请求的一个东西，是客户端，应该是client，所以没bind
         self._sock.setblocking(False)
+        # 把自己的socket加到loop里面
         loop.add(self._sock, eventloop.POLL_IN)
+        # 这里加入了handler，eventloop检测到socket有“动静”时调用self.handle_events
         loop.add_handler(self.handle_events, ref=ref)
 
+    # 这里触发回调
     def _call_callback(self, hostname, ip, error=None):
+        # 这里取出我们在请求的同时放进字典里面的callback函数
+        # cb = callback
         callbacks = self._hostname_to_cb.get(hostname, [])
+
         for callback in callbacks:
             if callback in self._cb_to_hostname:
                 del self._cb_to_hostname[callback]
             if ip or error:
+                # 实际调用发送数据的同时注册的回调函数callback
                 callback((hostname, ip), error)
             else:
                 callback((hostname, None),
@@ -355,6 +386,7 @@ class DNSResolver(object):
         if response and response.hostname:
             hostname = response.hostname
             ip = None
+            # 从报文里面拿到ip地址
             for answer in response.answers:
                 if answer[1] in (QTYPE_A, QTYPE_AAAA) and \
                         answer[2] == QCLASS_IN:
@@ -367,7 +399,9 @@ class DNSResolver(object):
             else:
                 if ip:
                     self._cache[hostname] = ip
+                    # 这里调用回调_call_callback
                     self._call_callback(hostname, ip)
+
                 elif self._hostname_status.get(hostname, None) == STATUS_IPV6:
                     for question in response.questions:
                         if question[1] == QTYPE_AAAA:
@@ -376,9 +410,11 @@ class DNSResolver(object):
 
     def handle_events(self, events):
         for sock, fd, event in events:
+            # 看是不是自己socket的，因为dns，tcp，udp的server都分别有自己的socket
             if sock != self._sock:
                 continue
             if event & eventloop.POLL_ERR:
+                # 出错了的话重启
                 logging.error('dns socket err')
                 self._loop.remove(self._sock)
                 self._sock.close()
@@ -388,10 +424,13 @@ class DNSResolver(object):
                 self._sock.setblocking(False)
                 self._loop.add(self._sock, eventloop.POLL_IN)
             else:
+                # 没出错就接受数据
+                # 因为是dns基于udp报文，所以没有连接要处理
                 data, addr = sock.recvfrom(1024)
                 if addr[0] not in self._servers:
                     logging.warn('received a packet other than our dns')
                     break
+                # handle_events调用_handle_data
                 self._handle_data(data)
             break
         now = time.time()
@@ -427,23 +466,30 @@ class DNSResolver(object):
         if not hostname:
             callback(None, Exception('empty hostname'))
         elif is_ip(hostname):
+            # 先看是不是一个ip，是就不同解析了，直接调用callback
             callback((hostname, hostname), None)
         elif hostname in self._hosts:
+            # 看是不是在host文件里面，是就直接callback
             logging.debug('hit hosts: %s', hostname)
             ip = self._hosts[hostname]
             callback((hostname, ip), None)
         elif hostname in self._cache:
+            # 看是不是在cache里面，是就直接callback
             logging.debug('hit cache: %s', hostname)
             ip = self._cache[hostname]
             callback((hostname, ip), None)
         else:
             if not is_valid_hostname(hostname):
+                # 如果不是正常hostname
                 callback(None, Exception('invalid hostname: %s' % hostname))
                 return
             arr = self._hostname_to_cb.get(hostname, None)
             if not arr:
                 self._hostname_status[hostname] = STATUS_IPV4
+                # 请求报文发出去
                 self._send_req(hostname, QTYPE_A)
+                # 同时在_hostname_to_cb注册一个{hostname:callback}的一对
+                # 要hostname因为这个socket可以发出去很多不同hostname的解析请求
                 self._hostname_to_cb[hostname] = [callback]
                 self._cb_to_hostname[callback] = hostname
             else:
